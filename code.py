@@ -5,9 +5,10 @@ CircuitPython 10.0.3
 
 import board
 import displayio
-import adafruit_imageload
+# import adafruit_imageload
 import gc
 import time
+import random
 from digitalio import DigitalInOut, Pull
 
 # =============================================================================
@@ -34,8 +35,9 @@ MAZE_COLS = 28
 MAZE_ROWS = 31
 
 # Movement
-MOVE_SPEED = 1  # pixels per frame
-FRAME_DELAY = 0.012  # ~80 FPS target (1 px/frame * 80 fps = 80 px/sec, close to arcade 75 px/sec)
+PACMAN_SPEED = 1.25  # pixels per frame
+GHOST_SPEED = 1.17   # pixels per frame (approx 94% of Pac-Man speed)
+FRAME_DELAY = 0.008  # ~100 FPS target
 
 # Directions
 DIR_NONE = 0
@@ -70,9 +72,9 @@ MAZE_DATA = [
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0],
-    [1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1],
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0],
@@ -248,14 +250,18 @@ gc.collect()
 # LOAD SPRITE SHEET
 # =============================================================================
 
-sprite_sheet, sprite_palette = adafruit_imageload.load(
-    "/images/sprites.bmp",
-    bitmap=displayio.Bitmap,
-    palette=displayio.Palette
-)
+# Use OnDiskBitmap to save RAM and avoid allocation issues
+sprite_sheet = displayio.OnDiskBitmap("/images/sprites.bmp")
+sprite_palette = sprite_sheet.pixel_shader
+
+print(f"Sprite Sheet Dimensions: {sprite_sheet.width}x{sprite_sheet.height}")
 
 # Make black transparent for sprites
-sprite_palette.make_transparent(0)
+# OnDiskBitmap.pixel_shader is a Palette for indexed BMPs
+try:
+    sprite_palette.make_transparent(0)
+except AttributeError:
+    print("Warning: Could not set transparency (not a Palette?)")
 
 gc.collect()
 
@@ -281,13 +287,14 @@ class PacMan:
     }
     
     def __init__(self):
-        # Create sprite using TileGrid (2x2 tiles of 8x8 = 16x16 sprite)
+        # Create sprite using TileGrid (1x2 tiles of 16x8 = 16x16 sprite)
+        # Optimization: Use 16x8 tiles to handle non-16-divisible bitmap height (248px)
         self.sprite = displayio.TileGrid(
             sprite_sheet,
             pixel_shader=sprite_palette,
-            width=2,
+            width=1,
             height=2,
-            tile_width=8,
+            tile_width=16,
             tile_height=8
         )
         
@@ -319,20 +326,18 @@ class PacMan:
         frames = self.FRAMES.get(direction, self.FRAMES[DIR_RIGHT])
         fx, fy = frames[frame_idx % 3]
         
-        # Convert pixel position to tile indices
-        # Sprite sheet is 224 pixels wide = 28 tiles of 8x8
-        tiles_per_row = 28
-        base_tile = (fy // 8) * tiles_per_row + (fx // 8)
+        # Convert pixel position to tile indices (16x8 tiles)
+        # Sprite sheet is 224 pixels wide = 14 tiles of 16x8
+        tiles_per_row = sprite_sheet.width // 16
+        base_tile = (fy // 8) * tiles_per_row + (fx // 16)
         
         self.sprite[0, 0] = base_tile
-        self.sprite[1, 0] = base_tile + 1
         self.sprite[0, 1] = base_tile + tiles_per_row
-        self.sprite[1, 1] = base_tile + tiles_per_row + 1
     
     def update_sprite_pos(self):
         """Update sprite screen position."""
-        self.sprite.x = OFFSET_X + self.x
-        self.sprite.y = OFFSET_Y + self.y
+        self.sprite.x = int(OFFSET_X + self.x)
+        self.sprite.y = int(OFFSET_Y + self.y)
     
     def can_move(self, direction):
         """Check if movement in direction is possible."""
@@ -340,13 +345,13 @@ class PacMan:
         next_y = self.y
         
         if direction == DIR_UP:
-            next_y -= MOVE_SPEED
+            next_y -= PACMAN_SPEED
         elif direction == DIR_DOWN:
-            next_y += MOVE_SPEED
+            next_y += PACMAN_SPEED
         elif direction == DIR_LEFT:
-            next_x -= MOVE_SPEED
+            next_x -= PACMAN_SPEED
         elif direction == DIR_RIGHT:
-            next_x += MOVE_SPEED
+            next_x += PACMAN_SPEED
         else:
             return False
         
@@ -385,8 +390,8 @@ class PacMan:
             check_x = center_x + SENSOR_OFFSET
             check_y = center_y
             
-        tx = check_x // TILE_SIZE
-        ty = check_y // TILE_SIZE
+        tx = int(check_x // TILE_SIZE)
+        ty = int(check_y // TILE_SIZE)
         
         # Bounds check
         if tx < 0 or tx >= MAZE_COLS:
@@ -409,8 +414,8 @@ class PacMan:
         Unlike can_move, this checks the tile grid directly to prevent
         turning into a wall even if we have pixel overlap space.
         """
-        target_tx = self.tile_x
-        target_ty = self.tile_y
+        target_tx = int(self.tile_x)
+        target_ty = int(self.tile_y)
         
         if direction == DIR_UP:
             target_ty -= 1
@@ -449,7 +454,7 @@ class PacMan:
         dist_y = min(dist_y, 8 - dist_y)
         
         # Use <= to allow snapping even if we are 1 frame away
-        return dist_x <= MOVE_SPEED and dist_y <= MOVE_SPEED
+        return dist_x <= PACMAN_SPEED and dist_y <= PACMAN_SPEED
 
     def is_opposite(self, dir1, dir2):
         """Check if two directions are opposite."""
@@ -489,8 +494,8 @@ class PacMan:
                     # SNAP to exact center
                     center_x = self.x + 8
                     center_y = self.y + 8
-                    tile_x = center_x // 8
-                    tile_y = center_y // 8
+                    tile_x = int(center_x // 8)
+                    tile_y = int(center_y // 8)
                     self.x = tile_x * 8 + 4 - 8
                     self.y = tile_y * 8 + 4 - 8
                     
@@ -509,8 +514,8 @@ class PacMan:
                 # print(f"HIT WALL at ({self.x},{self.y}) dir={self.direction}")
                 center_x = self.x + 8
                 center_y = self.y + 8
-                tile_x = center_x // 8
-                tile_y = center_y // 8
+                tile_x = int(center_x // 8)
+                tile_y = int(center_y // 8)
                 self.x = tile_x * 8 + 4 - 8
                 self.y = tile_y * 8 + 4 - 8
                 self.direction = DIR_NONE
@@ -519,13 +524,13 @@ class PacMan:
         if self.direction != DIR_NONE:
             if self.can_move(self.direction):
                 if self.direction == DIR_UP:
-                    self.y -= MOVE_SPEED
+                    self.y -= PACMAN_SPEED
                 elif self.direction == DIR_DOWN:
-                    self.y += MOVE_SPEED
+                    self.y += PACMAN_SPEED
                 elif self.direction == DIR_LEFT:
-                    self.x -= MOVE_SPEED
+                    self.x -= PACMAN_SPEED
                 elif self.direction == DIR_RIGHT:
-                    self.x += MOVE_SPEED
+                    self.x += PACMAN_SPEED
                 
                 # Tunnel wrap
                 if self.x < -16:
@@ -541,8 +546,8 @@ class PacMan:
                     self.set_frame(self.direction, self.anim_frame)
         
         # Update positions
-        self.tile_x = (self.x + 8) // TILE_SIZE
-        self.tile_y = (self.y + 8) // TILE_SIZE
+        self.tile_x = int((self.x + 8) // TILE_SIZE)
+        self.tile_y = int((self.y + 8) // TILE_SIZE)
         self.update_sprite_pos()
         
         # Eat items
@@ -550,19 +555,425 @@ class PacMan:
         # Only eat if we are close to the center to avoid accidental eating
         if self.at_tile_center():
             # Bounds check for tunnel
-            if 0 <= self.tile_x < MAZE_COLS and 0 <= self.tile_y < MAZE_ROWS:
-                item = items_grid[self.tile_x, self.tile_y]
+            tx = int(self.tile_x)
+            ty = int(self.tile_y)
+            if 0 <= tx < MAZE_COLS and 0 <= ty < MAZE_ROWS:
+                item = items_grid[tx, ty]
                 if item == 1: # Small Dot
-                    items_grid[self.tile_x, self.tile_y] = 0
+                    items_grid[tx, ty] = 0
                     global score
                     score += 10
                     if score % 100 == 0: # Print every 100 points to avoid spam
                         print(f"Score: {score}")
                 elif item == 2: # Power Pellet
-                    items_grid[self.tile_x, self.tile_y] = 0
+                    items_grid[tx, ty] = 0
                     global score
                     score += 50
                     print(f"Score: {score} - POWER UP!")
+
+# =============================================================================
+# GHOST CLASS
+# =============================================================================
+
+class Ghost:
+    """Ghost enemy character."""
+    
+    # Y-offsets in sprite sheet (assuming 1 row per ghost)
+    TYPE_BLINKY = 64
+    TYPE_PINKY = 80
+    TYPE_INKY = 96
+    TYPE_CLYDE = 112
+    
+    def __init__(self, ghost_type, start_tile_x, start_tile_y, x_offset=0):
+        self.ghost_type = ghost_type
+        
+        self.sprite = displayio.TileGrid(
+            sprite_sheet,
+            pixel_shader=sprite_palette,
+            width=1,
+            height=2,
+            tile_width=16,
+            tile_height=8
+        )
+        
+        self.tile_x = start_tile_x
+        self.tile_y = start_tile_y
+        # Align to pixel grid (Center of 16x16 sprite on 8x8 tile)
+        # Tile Center = tile_x * 8 + 4
+        # Sprite Center = x + 8
+        # x + 8 = tile_x * 8 + 4  =>  x = tile_x * 8 - 4
+        self.x = self.tile_x * 8 - 4 + x_offset
+        self.y = self.tile_y * 8 - 4
+        
+        self.direction = DIR_LEFT
+        self.next_direction = DIR_NONE
+        
+        # Ghost House State
+        self.in_house = False
+        self.house_timer = 0
+        if self.ghost_type != Ghost.TYPE_BLINKY:
+            self.in_house = True
+            # Initial bounce direction
+            if self.ghost_type == Ghost.TYPE_PINKY:
+                self.direction = DIR_DOWN # Start moving down to bounce
+            else:
+                self.direction = DIR_UP
+        
+        self.anim_frame = 0
+        self.anim_timer = 0
+        
+        self.set_frame(self.direction, 0)
+        self.update_sprite_pos()
+        
+    def set_frame(self, direction, frame_idx):
+        base_y = self.ghost_type
+        
+        # Layout assumption: Right, Left, Up, Down (2 frames each)
+        if direction == DIR_RIGHT:
+            base_x = 0
+        elif direction == DIR_LEFT:
+            base_x = 32
+        elif direction == DIR_UP:
+            base_x = 64
+        elif direction == DIR_DOWN:
+            base_x = 96
+        else:
+            base_x = 0 # Default
+            
+        base_x += (frame_idx % 2) * 16
+        
+        tiles_per_row = sprite_sheet.width // 16
+        base_tile = (base_y // 8) * tiles_per_row + (base_x // 16)
+        
+        self.sprite[0, 0] = base_tile
+        self.sprite[0, 1] = base_tile + tiles_per_row
+
+    def update_sprite_pos(self):
+        self.sprite.x = int(OFFSET_X + self.x)
+        self.sprite.y = int(OFFSET_Y + self.y)
+
+    def can_move(self, direction):
+        """Check if movement in direction is possible."""
+        next_x = self.x
+        next_y = self.y
+        
+        if direction == DIR_UP:
+            next_y -= GHOST_SPEED
+        elif direction == DIR_DOWN:
+            next_y += GHOST_SPEED
+        elif direction == DIR_LEFT:
+            next_x -= GHOST_SPEED
+        elif direction == DIR_RIGHT:
+            next_x += GHOST_SPEED
+        else:
+            return False
+        
+        center_x = next_x + 8
+        center_y = next_y + 8
+        
+        # STRICT TUNNEL CHECK
+        if center_x < 8 or center_x > 216:
+            if direction == DIR_UP or direction == DIR_DOWN:
+                return False
+
+        if next_x < -8 or next_x >= GAME_WIDTH - 8:
+            return True
+            
+        SENSOR_OFFSET = 3
+        
+        if direction == DIR_UP:
+            check_x = center_x
+            check_y = center_y - SENSOR_OFFSET
+        elif direction == DIR_DOWN:
+            check_x = center_x
+            check_y = center_y + SENSOR_OFFSET
+        elif direction == DIR_LEFT:
+            check_x = center_x - SENSOR_OFFSET
+            check_y = center_y
+        elif direction == DIR_RIGHT:
+            check_x = center_x + SENSOR_OFFSET
+            check_y = center_y
+            
+        tx = int(check_x // TILE_SIZE)
+        ty = int(check_y // TILE_SIZE)
+        
+        if tx < 0 or tx >= MAZE_COLS:
+            if ty == 14:
+                return True
+            return False
+        
+        if ty < 0 or ty >= MAZE_ROWS:
+            return False
+            
+        # Ghosts CAN pass through Ghost House Door
+        # So we remove that check here
+        
+        # Prevent re-entry into Ghost House
+        # Door is at Row 12 (above wall) -> Row 13 (wall gap)
+        # If we are at Row 11 and trying to go DOWN into 12, forbid it
+        # unless we are dead (eyes) - TODO
+        if direction == DIR_DOWN and ty == 12 and (tx == 13 or tx == 14):
+             if not self.in_house: # If we are outside, don't go back in
+                 return False
+            
+        result = MAZE_DATA[ty][tx] != WALL
+        if not result and self.ghost_type == 80: # Debug Pinky
+             # Only print if we are NOT in a wall (i.e. we are blocked by a wall ahead)
+             # This prevents spam when we are just sitting still
+             pass
+             # print(f"Pinky Blocked: Dir={direction} Pos={self.x:.1f},{self.y:.1f} Check={check_x:.1f},{check_y:.1f} Tile={tx},{ty}")
+        return result
+
+    def at_tile_center(self):
+        center_x = self.x + 8
+        center_y = self.y + 8
+        dist_x = abs((center_x - 4) % 8)
+        dist_y = abs((center_y - 4) % 8)
+        dist_x = min(dist_x, 8 - dist_x)
+        dist_y = min(dist_y, 8 - dist_y)
+        # Strict check for AI decision making to prevent jitter
+        # Must be strictly less than GHOST_SPEED (1.17) to avoid "gravity well" infinite loop
+        # Must be >= GHOST_SPEED / 2 (0.585) to ensure we don't skip the window
+        # 0.7 is the sweet spot.
+        return dist_x <= 0.7 and dist_y <= 0.7
+
+    def update(self):
+        # Handle Ghost House Behavior
+        if self.in_house:
+            self.house_timer += 1
+            should_exit = False
+            
+            # Exit Conditions
+            if self.ghost_type == Ghost.TYPE_PINKY:
+                should_exit = True # Pinky leaves immediately
+            elif self.ghost_type == Ghost.TYPE_INKY and self.house_timer > 300: # ~5s
+                should_exit = True
+            elif self.ghost_type == Ghost.TYPE_CLYDE and self.house_timer > 600: # ~10s
+                should_exit = True
+                
+            if should_exit:
+                # Target: Center X (104), Outside Y (Row 11 Center)
+                # Row 11 is the corridor. Center Y = 11*8 - 4 = 84.
+                target_x = 13 * 8 # 104 (Between Tile 13 and 14)
+                target_y = 11 * 8 - 4 # 84 (Centered in Row 11)
+                
+                # 1. Align X
+                if abs(self.x - target_x) >= GHOST_SPEED:
+                    if self.x < target_x:
+                        self.x += GHOST_SPEED
+                        self.direction = DIR_RIGHT
+                    else:
+                        self.x -= GHOST_SPEED
+                        self.direction = DIR_LEFT
+                # 2. Move UP
+                else:
+                    self.x = target_x # Snap X
+                    self.y -= GHOST_SPEED
+                    self.direction = DIR_UP
+                    
+                    # Check if out
+                    if self.y <= target_y:
+                        self.y = target_y # Snap Y to center of Row 11
+                        self.in_house = False
+                        self.direction = DIR_LEFT # Default exit direction
+                        # print(f"Ghost {self.ghost_type} exited to {self.x}, {self.y}")
+            else:
+                # Bounce Up/Down
+                # Center Y for Row 14 is 108 (14*8 - 4)
+                center_y = 14 * 8 - 4
+                limit = 3 # Bounce amplitude
+                
+                if self.direction == DIR_UP:
+                    self.y -= GHOST_SPEED / 2 # Move slower in house
+                    if self.y < (center_y - limit):
+                        self.direction = DIR_DOWN
+                else:
+                    self.y += GHOST_SPEED / 2
+                    if self.y > (center_y + limit):
+                        self.direction = DIR_UP
+            
+            # Update sprite and return (skip normal movement)
+            self.anim_timer += 1
+            if self.anim_timer >= 10:
+                self.anim_timer = 0
+                self.anim_frame = (self.anim_frame + 1) % 2
+                self.set_frame(self.direction, self.anim_frame)
+            self.update_sprite_pos()
+            return
+
+        # Basic AI: Move forward. At intersection, pick random valid direction (not reverse).
+        
+        # 1. Handle Turns at Intersections
+        if self.at_tile_center():
+            # print(f"Ghost {self.ghost_type} at intersection {self.tile_x},{self.tile_y}")
+            # Get valid directions
+            valid_dirs = []
+            for d in [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]:
+                # Don't reverse
+                is_reverse = False
+                if d == DIR_UP and self.direction == DIR_DOWN:
+                    is_reverse = True
+                if d == DIR_DOWN and self.direction == DIR_UP:
+                    is_reverse = True
+                if d == DIR_LEFT and self.direction == DIR_RIGHT:
+                    is_reverse = True
+                if d == DIR_RIGHT and self.direction == DIR_LEFT:
+                    is_reverse = True
+                
+                if not is_reverse:
+                    # Check grid neighbor directly (Look ahead 1 tile)
+                    nx, ny = int(self.tile_x), int(self.tile_y)
+                    if d == DIR_UP:
+                        ny -= 1
+                    elif d == DIR_DOWN:
+                        ny += 1
+                    elif d == DIR_LEFT:
+                        nx -= 1
+                    elif d == DIR_RIGHT:
+                        nx += 1
+                    
+                    is_valid = False
+                    if 0 <= nx < MAZE_COLS and 0 <= ny < MAZE_ROWS:
+                        if MAZE_DATA[ny][nx] != WALL:
+                            is_valid = True
+                            
+                            # ONE WAY DOOR CHECK FOR AI
+                            # Prevent AI from choosing to go back into the house
+                            # Block entering Row 12 (Door) from Row 11
+                            if d == DIR_DOWN and ny == 12 and (nx == 13 or nx == 14):
+                                if not self.in_house:
+                                    is_valid = False
+
+                    elif ny == 14: # Tunnel
+                        is_valid = True
+                        
+                    if is_valid:
+                        valid_dirs.append(d)
+            
+            if valid_dirs:
+                # If current direction is valid, bias towards it to avoid jittery movement
+                # But we want them to turn sometimes.
+                # Let's say 20% chance to turn if current is valid.
+                if self.direction in valid_dirs and len(valid_dirs) > 1:
+                    if random.random() < 0.2:
+                        self.direction = random.choice(valid_dirs)
+                elif valid_dirs:
+                    self.direction = random.choice(valid_dirs)
+                
+                # Snap to center
+                center_x = self.x + 8
+                center_y = self.y + 8
+                tile_x = int(center_x // 8)
+                tile_y = int(center_y // 8)
+                self.x = tile_x * 8 + 4 - 8
+                self.y = tile_y * 8 + 4 - 8
+            else:
+                # Dead end or stuck, try to reverse
+                reverse_dir = DIR_NONE
+                if self.direction == DIR_UP:
+                    reverse_dir = DIR_DOWN
+                elif self.direction == DIR_DOWN:
+                    reverse_dir = DIR_UP
+                elif self.direction == DIR_LEFT:
+                    reverse_dir = DIR_RIGHT
+                elif self.direction == DIR_RIGHT:
+                    reverse_dir = DIR_LEFT
+                
+                if self.can_move(reverse_dir):
+                    self.direction = reverse_dir
+
+        # 2. Move
+        if self.direction != DIR_NONE:
+            if self.can_move(self.direction):
+                if self.direction == DIR_UP:
+                    self.y -= GHOST_SPEED
+                elif self.direction == DIR_DOWN:
+                    self.y += GHOST_SPEED
+                elif self.direction == DIR_LEFT:
+                    self.x -= GHOST_SPEED
+                elif self.direction == DIR_RIGHT:
+                    self.x += GHOST_SPEED
+                
+                # Tunnel wrap
+                if self.x < -16:
+                    self.x = GAME_WIDTH
+                elif self.x >= GAME_WIDTH:
+                    self.x = -16
+                
+                # Animate
+                self.anim_timer += 1
+                if self.anim_timer >= 10: # Slower animation for ghosts
+                    self.anim_timer = 0
+                    self.anim_frame = (self.anim_frame + 1) % 2
+                    self.set_frame(self.direction, self.anim_frame)
+            else:
+                # STUCK RECOVERY
+                # If we can't move in the chosen direction, pick a new one immediately.
+                # This handles cases where AI chose a blocked path or alignment issues.
+                # print(f"Ghost {self.ghost_type} STUCK at {self.x:.1f},{self.y:.1f} (Tile {self.tile_x},{self.tile_y}) Dir: {self.direction}")
+                
+                # Try all directions
+                possible_turns = []
+                possible_reverse = []
+                
+                reverse_dir = DIR_NONE
+                if self.direction == DIR_UP:
+                    reverse_dir = DIR_DOWN
+                elif self.direction == DIR_DOWN:
+                    reverse_dir = DIR_UP
+                elif self.direction == DIR_LEFT:
+                    reverse_dir = DIR_RIGHT
+                elif self.direction == DIR_RIGHT:
+                    reverse_dir = DIR_LEFT
+
+                for d in [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT]:
+                    if self.can_move(d):
+                        if d == reverse_dir:
+                            possible_reverse.append(d)
+                        else:
+                            possible_turns.append(d)
+                
+                # print(f"  Possible Turns: {possible_turns}, Reverse: {possible_reverse}")
+
+                # Prefer turns over reversing to avoid bouncing back and forth
+                if possible_turns:
+                    self.direction = random.choice(possible_turns)
+                    # print(f"  Recovering with TURN to {self.direction}")
+                    # SNAP to center to fix alignment if we are turning late
+                    center_x = self.x + 8
+                    center_y = self.y + 8
+                    tile_x = int(center_x // 8)
+                    tile_y = int(center_y // 8)
+                    self.x = tile_x * 8 + 4 - 8
+                    self.y = tile_y * 8 + 4 - 8
+                elif possible_reverse:
+                    self.direction = possible_reverse[0]
+                    # print(f"  Recovering with REVERSE to {self.direction}")
+                else:
+                    pass
+                    # print("  TOTALLY STUCK! No valid moves.")
+        
+        # Update positions
+        self.tile_x = int((self.x + 8) // TILE_SIZE)
+        self.tile_y = int((self.y + 8) // TILE_SIZE)
+        
+        # DEBUG: Check if stuck (position not changing)
+        if not hasattr(self, 'last_pos'):
+            self.last_pos = (self.x, self.y)
+            self.stuck_frames = 0
+        
+        if abs(self.x - self.last_pos[0]) < 0.1 and abs(self.y - self.last_pos[1]) < 0.1:
+            self.stuck_frames += 1
+            if self.stuck_frames > 60:
+                print(f"Ghost {self.ghost_type} HOVERING at {self.x:.1f},{self.y:.1f} Dir:{self.direction}")
+                self.stuck_frames = 0
+                # Force a direction change
+                self.direction = random.choice([DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT])
+        else:
+            self.stuck_frames = 0
+            self.last_pos = (self.x, self.y)
+
+        self.update_sprite_pos()
 
 # =============================================================================
 # CREATE GAME OBJECTS
@@ -570,6 +981,31 @@ class PacMan:
 
 pacman = PacMan()
 main_group.append(pacman.sprite)
+
+# Create ghosts
+ghosts = []
+# Spawn locations (Tile X, Tile Y, X Offset Px)
+# Ghost House is roughly X=11-16, Y=13-15
+# We spawn them in the center to avoid wall clipping
+spawn_points = [
+    (13, 11, 0), # Blinky (Outside, above door, Row 11)
+    (13, 14, 4), # Pinky (Inside, center, +4px)
+    (11, 14, 4), # Inky (Inside, left, +4px)
+    (15, 14, 4)  # Clyde (Inside, right, +4px)
+]
+
+for i, (gx, gy, x_off) in enumerate(spawn_points):
+    ghost_type = Ghost.TYPE_BLINKY
+    if i == 1:
+        ghost_type = Ghost.TYPE_PINKY
+    elif i == 2:
+        ghost_type = Ghost.TYPE_INKY
+    elif i == 3:
+        ghost_type = Ghost.TYPE_CLYDE
+        
+    ghost = Ghost(ghost_type, gx, gy, x_off)
+    ghosts.append(ghost)
+    main_group.append(ghost.sprite)
 
 gc.collect()
 print(f"Free memory: {gc.mem_free()}")
@@ -608,12 +1044,22 @@ score = 0
 debug_timer = 0
 blink_timer = 0
 blink_state = True # True = Visible, False = Hidden
+fps_start_time = time.monotonic() # For FPS calculation
 
 while True:
     start_time = time.monotonic()
     
     read_input()
     pacman.update()
+    
+    # Update ghosts
+    for ghost in ghosts:
+        ghost.update()
+        
+    # DEBUG: Heartbeat for ghost positions every 60 frames
+    # if debug_timer == 0:
+    #    for g in ghosts:
+    #        print(f"G{g.ghost_type}: {g.x:.1f},{g.y:.1f} T({g.tile_x},{g.tile_y}) D:{g.direction} InHouse:{g.in_house}")
     
     # Handle Blinking (approx every 15 frames = 250ms)
     blink_timer += 1
@@ -629,8 +1075,17 @@ while True:
     # Debug output
     debug_timer += 1
     if debug_timer >= 60: # Every 60 frames
+        current_time = time.monotonic()
+        elapsed_fps = current_time - fps_start_time
+        fps = 60 / elapsed_fps
+        
+        # Run GC every second to prevent OOM, but not every frame to avoid stutter
+        gc.collect()
+        
+        print(f"FPS: {fps:.1f} | Mem: {gc.mem_free()}")
+        
         debug_timer = 0
-        # print(f"Mem: {gc.mem_free()} | Time: {time.monotonic() - start_time:.4f}")
+        fps_start_time = current_time
     
     # Frame timing
     elapsed = time.monotonic() - start_time
