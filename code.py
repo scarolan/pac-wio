@@ -10,6 +10,13 @@ import gc
 import time
 import random
 from digitalio import DigitalInOut, Pull
+import terminalio
+import pwmio
+try:
+    from adafruit_bitmap_font import bitmap_font
+    from adafruit_display_text import label
+except ImportError:
+    pass
 
 # =============================================================================
 # CONSTANTS
@@ -35,9 +42,9 @@ MAZE_COLS = 28
 MAZE_ROWS = 31
 
 # Movement
-PACMAN_SPEED = 1.25  # pixels per frame
-GHOST_SPEED = 1.17   # pixels per frame (approx 94% of Pac-Man speed)
-FRAME_DELAY = 0.008  # ~100 FPS target
+PACMAN_SPEED = 1.3    # pixels per frame
+GHOST_SPEED = 1.22    # pixels per frame (approx 94% of Pac-Man speed)
+FRAME_DELAY = 0.005   # Slightly more delay
 
 # Directions
 DIR_NONE = 0
@@ -62,10 +69,49 @@ MODE_EATEN = 3
 # Game States
 STATE_PLAY = 0
 STATE_DYING = 1
+STATE_EATING_GHOST = 2
+STATE_GAME_OVER = 3
+STATE_LEVEL_COMPLETE = 4
+STATE_EATING_FRUIT = 5
+
+# Fruit point values per level
+FRUIT_POINTS = [100, 300, 500, 500, 700, 700, 1000, 1000, 2000, 2000, 3000, 3000, 5000]
 
 # Level 1 Mode Timings (seconds)
 # Scatter, Chase, Scatter, Chase, Scatter, Chase, Scatter, Chase
 MODE_TIMES = [7, 20, 7, 20, 5, 20, 5, 999999]
+
+# Frightened Mode Duration (Frames)
+# Level 1: ~6 seconds (at 100fps = 600 frames)
+# This will decrease in higher levels
+FRIGHTENED_DURATION = 600 
+
+# Sprite Sheet Coordinates (x, y)
+SPRITE_LIFE = (128, 16) # 8, 1
+SPRITE_FRUIT_CHERRY = (32, 48) # 3, 2
+SPRITE_FRUIT_STRAWBERRY = (48, 48)
+SPRITE_FRUIT_ORANGE = (64, 48)
+SPRITE_FRUIT_APPLE = (80, 48)
+SPRITE_FRUIT_MELON = (96, 48)
+SPRITE_FRUIT_GALAXIAN = (112, 48)
+SPRITE_FRUIT_BELL = (128, 48)
+SPRITE_FRUIT_KEY = (144, 48)
+
+FRUIT_LEVELS = [
+    SPRITE_FRUIT_CHERRY,     # Level 1
+    SPRITE_FRUIT_STRAWBERRY, # Level 2
+    SPRITE_FRUIT_ORANGE,     # Level 3
+    SPRITE_FRUIT_ORANGE,     # Level 4
+    SPRITE_FRUIT_APPLE,      # Level 5
+    SPRITE_FRUIT_APPLE,      # Level 6
+    SPRITE_FRUIT_MELON,      # Level 7
+    SPRITE_FRUIT_MELON,      # Level 8
+    SPRITE_FRUIT_GALAXIAN,   # Level 9
+    SPRITE_FRUIT_GALAXIAN,   # Level 10
+    SPRITE_FRUIT_BELL,       # Level 11
+    SPRITE_FRUIT_BELL,       # Level 12
+    SPRITE_FRUIT_KEY         # Level 13+
+]
 
 # =============================================================================
 # MAZE DATA - Collision map generated from maze_empty.bmp
@@ -121,6 +167,147 @@ RIGHT.switch_to_input(pull=Pull.UP)
 PRESS = DigitalInOut(board.SWITCH_PRESS)
 PRESS.switch_to_input(pull=Pull.UP)
 
+# Sound toggle button (Button 1 on top of device)
+BUTTON_1 = DigitalInOut(board.BUTTON_1)
+BUTTON_1.switch_to_input(pull=Pull.UP)
+
+# =============================================================================
+# SOUND SETUP
+# =============================================================================
+
+# Wio Terminal buzzer is on pin BUZZER (or D0 on some builds)
+try:
+    buzzer = pwmio.PWMOut(board.BUZZER, variable_frequency=True)
+except AttributeError:
+    # Fallback if BUZZER pin not defined
+    try:
+        buzzer = pwmio.PWMOut(board.D0, variable_frequency=True)
+    except:
+        buzzer = None
+        print("No buzzer available")
+
+sound_enabled = True
+last_button_state = True  # True = not pressed
+
+# Pac-Man waka frequencies (alternating)
+WAKA_FREQ_1 = 261  # C4
+WAKA_FREQ_2 = 392  # G4
+waka_toggle = False
+
+def play_waka():
+    """Play the waka sound effect."""
+    global waka_toggle
+    if not sound_enabled or buzzer is None:
+        return
+    
+    freq = WAKA_FREQ_2 if waka_toggle else WAKA_FREQ_1
+    waka_toggle = not waka_toggle
+    
+    buzzer.frequency = freq
+    buzzer.duty_cycle = 32768  # 50% duty cycle
+
+def stop_sound():
+    """Stop any sound."""
+    if buzzer is not None:
+        buzzer.duty_cycle = 0
+
+def play_death_sound():
+    """Play death sound effect (blocking version - not used during animation)."""
+    if not sound_enabled or buzzer is None:
+        return
+    # Descending tone
+    for freq in range(400, 100, -30):
+        buzzer.frequency = freq
+        buzzer.duty_cycle = 32768
+        time.sleep(0.05)
+    buzzer.duty_cycle = 0
+
+def play_death_note(frame_idx):
+    """Play a single death note based on animation frame."""
+    if not sound_enabled or buzzer is None:
+        return
+    # 11 death frames, descend from 500Hz to 100Hz
+    freq = 500 - (frame_idx * 35)
+    if freq < 100:
+        freq = 100
+    buzzer.frequency = freq
+    buzzer.duty_cycle = 32768
+
+def play_eat_ghost_sound():
+    """Play ghost eating sound."""
+    if not sound_enabled or buzzer is None:
+        return
+    # Quick ascending tone
+    for freq in range(200, 800, 100):
+        buzzer.frequency = freq
+        buzzer.duty_cycle = 32768
+        time.sleep(0.02)
+    buzzer.duty_cycle = 0
+
+def play_startup_jingle():
+    """Play the Pac-Man startup jingle."""
+    if not sound_enabled or buzzer is None:
+        return
+    
+    # Pac-Man Intro Theme
+    # Tempo control: lower is faster
+    T = 0.11  # Base note duration (16th note)
+    H = T * 2 # Half note / ending
+
+    melody = [
+        # --- Phrase 1: B Major Arpeggio ---
+        (494, T),  # B4
+        (988, T),  # B5 (Octave jump!)
+        (740, T),  # F#5
+        (622, T),  # D#5
+        (988, T),  # B5
+        (740, T),  # F#5
+        (622, H),  # D#5 (End of phrase)
+
+        # --- Phrase 2: C Major Arpeggio ---
+        (523, T),  # C5
+        (1047, T), # C6 (Octave jump!)
+        (784, T),  # G5
+        (659, T),  # E5
+        (1047, T), # C6
+        (784, T),  # G5
+        (659, H),  # E5 (End of phrase)
+
+        # --- Phrase 3: Back to B Major ---
+        (494, T),  # B4
+        (988, T),  # B5
+        (740, T),  # F#5
+        (622, T),  # D#5
+        (988, T),  # B5
+        (740, T),  # F#5
+        (622, H),  # D#5 
+
+        # --- Phrase 4: Chromatic Rise to Finish ---
+        # Rising tension...
+        (622, T),  # D#5
+        (659, T),  # E5
+        (698, T),  # F5
+        
+        (698, T),  # F5 (Repeat F to bridge the triplet feel)
+        (740, T),  # F#5
+        (784, T),  # G5
+        
+        (784, T),  # G5 (Repeat G)
+        (831, T),  # G#5
+        (880, T),  # A5
+        
+        (988, H)   # B5 (Final Note - bold finish!)
+    ]
+
+    for freq, duration in melody:
+        buzzer.frequency = freq
+        buzzer.duty_cycle = 32768
+        time.sleep(duration)
+        buzzer.duty_cycle = 0
+        time.sleep(0.02)  # Brief gap between notes
+    
+    buzzer.duty_cycle = 0
+
 # =============================================================================
 # DISPLAY SETUP
 # =============================================================================
@@ -131,7 +318,7 @@ display.rotation = 270
 
 # Main display group
 main_group = displayio.Group()
-display.show(main_group)
+display.root_group = main_group
 
 # =============================================================================
 # LOAD MAZE BACKGROUND
@@ -235,6 +422,39 @@ for y in range(MAZE_ROWS):
 
 main_group.append(items_grid)
 
+# Count actual dots for level completion
+dot_count = 0
+for y in range(MAZE_ROWS):
+    for x in range(MAZE_COLS):
+        if items_grid[x, y] == 1 or items_grid[x, y] == 2:
+            dot_count += 1
+TOTAL_DOTS = dot_count
+print(f"Total dots in maze: {TOTAL_DOTS}")
+
+def reset_dots():
+    """Reset all dots and power pellets to their initial state."""
+    global dots_eaten
+    dots_eaten = 0
+    for y in range(MAZE_ROWS):
+        for x in range(MAZE_COLS):
+            if MAZE_DATA[y][x] == 0 and (x, y) in reachable: # Path and Reachable
+                # Check exclusions
+                # Ghost house interior (approx rows 13-15, cols 10-17)
+                is_ghost_house = (10 <= x <= 17) and (13 <= y <= 15)
+                # Ghost house door (row 12, cols 13-14)
+                is_ghost_door = (y == 12) and (13 <= x <= 14)
+                # Tunnels
+                is_tunnel = (y == 14) and (x < 6 or x > 21)
+                
+                if (x, y) in POWER_PELLETS:
+                    items_grid[x, y] = 2 # Power Pellet
+                elif not is_ghost_house and not is_ghost_door and not is_tunnel:
+                    items_grid[x, y] = 1 # Small Dot
+                else:
+                    items_grid[x, y] = 0 # Empty
+            else:
+                items_grid[x, y] = 0 # Empty
+
 # =============================================================================
 # POWER PELLET BLINKING (COVERS)
 # =============================================================================
@@ -306,6 +526,15 @@ class PacMan:
     DEATH_FRAMES = []
     for i in range(11): # 11 frames
         DEATH_FRAMES.append((48 + i * 16, 0))
+        
+    # Score Sprites (Row 8, Tiles 0-3)
+    # 200, 400, 800, 1600
+    SCORE_FRAMES = [
+        (0, 128),   # 200
+        (16, 128),  # 400
+        (32, 128),  # 800
+        (48, 128)   # 1600
+    ]
     
     def __init__(self):
         # Create sprite using TileGrid (1x2 tiles of 16x8 = 16x16 sprite)
@@ -326,6 +555,10 @@ class PacMan:
         self.tile_y = 23
         self.x = 106
         self.y = 181
+        
+        # Saved position for score display
+        self.saved_x = 0
+        self.saved_y = 0
         
         # Movement
         self.direction = DIR_NONE
@@ -361,6 +594,19 @@ class PacMan:
             frame_idx = len(self.DEATH_FRAMES) - 1
             
         fx, fy = self.DEATH_FRAMES[frame_idx]
+        
+        tiles_per_row = sprite_sheet.width // 16
+        base_tile = (fy // 8) * tiles_per_row + (fx // 16)
+        
+        self.sprite[0, 0] = base_tile
+        self.sprite[0, 1] = base_tile + tiles_per_row
+
+    def set_score_frame(self, score_idx):
+        """Set sprite tiles for score display."""
+        if score_idx >= len(self.SCORE_FRAMES):
+            score_idx = len(self.SCORE_FRAMES) - 1
+            
+        fx, fy = self.SCORE_FRAMES[score_idx]
         
         tiles_per_row = sprite_sheet.width // 16
         base_tile = (fy // 8) * tiles_per_row + (fx // 16)
@@ -601,6 +847,8 @@ class PacMan:
         # We use the center point to determine which tile we are on
         # Only eat if we are close to the center to avoid accidental eating
         if self.at_tile_center():
+            # Stop the waka sound briefly to create the alternating effect
+            stop_sound()
             # Bounds check for tunnel
             tx = int(self.tile_x)
             ty = int(self.tile_y)
@@ -608,15 +856,32 @@ class PacMan:
                 item = items_grid[tx, ty]
                 if item == 1: # Small Dot
                     items_grid[tx, ty] = 0
-                    global score
+                    global score, dots_eaten, bonus_fruit_active, bonus_fruit_timer
                     score += 10
+                    dots_eaten += 1
+                    play_waka()
+                    
+                    # Spawn bonus fruit at 70 and 170 dots
+                    if dots_eaten == 70 or dots_eaten == 170:
+                        bonus_fruit_active = True
+                        bonus_fruit_timer = 0
+                        bonus_fruit.hidden = False
+                        update_bonus_fruit()
+                        print(f"BONUS FRUIT APPEARED! (dots: {dots_eaten})")
+                    
                     if score % 100 == 0: # Print every 100 points to avoid spam
                         print(f"Score: {score}")
                 elif item == 2: # Power Pellet
                     items_grid[tx, ty] = 0
-                    global score
+                    global score, dots_eaten
                     score += 50
+                    dots_eaten += 1
+                    play_waka()
                     print(f"Score: {score} - POWER UP!")
+                    
+                    # Reset ghost multiplier
+                    global ghosts_eaten_count
+                    ghosts_eaten_count = 0
                     
                     # Trigger Frightened Mode
                     for g in ghosts:
@@ -707,8 +972,9 @@ class Ghost:
         # Override for Frightened / Eaten modes
         if self.mode == MODE_FRIGHTENED:
             base_y = 64 # Row 4
-            # Flash white if timer is low (< 2 seconds = 120 frames)
-            if self.frightened_timer < 120 and (self.frightened_timer // 10) % 2 == 0:
+            # Flash white if timer is nearing end (last ~2 seconds)
+            # Timer counts UP from 0 to FRIGHTENED_DURATION
+            if self.frightened_timer > (FRIGHTENED_DURATION - 200) and (self.frightened_timer // 10) % 2 == 0:
                 base_x = 160 # White Ghosts (Tiles 10-11)
             else:
                 base_x = 128 # Blue Ghosts (Tiles 8-9)
@@ -1278,6 +1544,186 @@ gc.collect()
 print(f"Free memory: {gc.mem_free()}")
 
 # =============================================================================
+# SCOREBOARD SETUP
+# =============================================================================
+
+score_label = None
+one_up_label = None
+high_score_label = None
+high_score_title_label = None
+game_over_label = None
+
+last_score = -1
+high_score = 10000
+last_high_score = -1
+
+try:
+    # Check if libraries were imported successfully
+    if 'bitmap_font' in globals() and 'label' in globals():
+        font = bitmap_font.load_font("/fonts/press_start_2p.bdf")
+        
+        # 1UP Label (Top Left)
+        one_up_label = label.Label(font, text="1UP", color=0xFFFFFF)
+        one_up_label.x = 8
+        one_up_label.y = 8
+        
+        # Score Label (Below 1UP)
+        score_label = label.Label(font, text="00", color=0xFFFFFF)
+        score_label.x = 8
+        score_label.y = 24
+        
+        # High Score Title (Top Center)
+        high_score_title_label = label.Label(font, text="HIGH SCORE", color=0xFFFFFF)
+        high_score_title_label.x = 72  # Center: (240 - 80) / 2 = 80, adjust for text width
+        high_score_title_label.y = 8
+        
+        # High Score Value (Below Title)
+        high_score_label = label.Label(font, text=f"{high_score}", color=0xFFFFFF)
+        high_score_label.x = 96  # Centered under HIGH SCORE
+        high_score_label.y = 24
+        
+        # GAME OVER Label (centered, hidden initially)
+        game_over_label = label.Label(font, text="GAME  OVER", color=0xFF0000)
+        game_over_label.x = 64  # Centered on 240px screen
+        game_over_label.y = 160  # Middle of screen
+        game_over_label.hidden = True
+        
+    elif 'terminalio' in globals() and 'label' in globals():
+        print("Using terminalio font")
+        font = terminalio.FONT
+        
+        one_up_label = label.Label(font, text="1UP", color=0xFFFFFF)
+        one_up_label.x = 8
+        one_up_label.y = 8
+        
+        score_label = label.Label(font, text="0", color=0xFFFFFF)
+        score_label.x = 8
+        score_label.y = 24
+        
+        high_score_title_label = label.Label(font, text="HIGH SCORE", color=0xFFFFFF)
+        high_score_title_label.x = 72
+        high_score_title_label.y = 8
+        
+        high_score_label = label.Label(font, text=f"{high_score}", color=0xFFFFFF)
+        high_score_label.x = 96
+        high_score_label.y = 24
+
+except Exception as e:
+    print(f"Scoreboard error: {e}")
+
+if one_up_label:
+    main_group.append(one_up_label)
+if score_label:
+    main_group.append(score_label)
+if high_score_title_label:
+    main_group.append(high_score_title_label)
+if high_score_label:
+    main_group.append(high_score_label)
+if game_over_label:
+    main_group.append(game_over_label)
+
+# =============================================================================
+# LIVES AND FRUIT DISPLAY
+# =============================================================================
+
+lives = 3
+level = 1
+
+# Helper function to get tile index from pixel coordinates
+def get_tile_index(px, py):
+    """Convert pixel (x, y) to tile index for 16x8 tile addressing."""
+    tiles_per_row = sprite_sheet.width // 16
+    base_tile = (py // 8) * tiles_per_row + (px // 16)
+    return base_tile
+
+# Create life sprites (bottom left) - up to 5 lives displayed
+life_sprites = []
+for i in range(5):
+    life_tg = displayio.TileGrid(
+        sprite_sheet,
+        pixel_shader=sprite_palette,
+        width=1,
+        height=2,
+        tile_width=16,
+        tile_height=8
+    )
+    # Position at bottom left, spaced 16 pixels apart
+    life_tg.x = OFFSET_X + 24 + (i * 16)
+    life_tg.y = OFFSET_Y + GAME_HEIGHT + 4  # Below game area
+    
+    # Set to life sprite (SPRITE_LIFE = (128, 16))
+    base_tile = get_tile_index(SPRITE_LIFE[0], SPRITE_LIFE[1])
+    tiles_per_row = sprite_sheet.width // 16
+    life_tg[0, 0] = base_tile
+    life_tg[0, 1] = base_tile + tiles_per_row
+    
+    life_tg.hidden = (i >= lives - 1)  # Show lives-1 (current life not shown)
+    life_sprites.append(life_tg)
+    main_group.append(life_tg)
+
+# Create fruit sprite (bottom right)
+fruit_sprite = displayio.TileGrid(
+    sprite_sheet,
+    pixel_shader=sprite_palette,
+    width=1,
+    height=2,
+    tile_width=16,
+    tile_height=8
+)
+fruit_sprite.x = OFFSET_X + GAME_WIDTH - 32
+fruit_sprite.y = OFFSET_Y + GAME_HEIGHT + 4  # Below game area
+
+def update_fruit_sprite():
+    """Update fruit sprite based on current level."""
+    fruit_idx = min(level - 1, len(FRUIT_LEVELS) - 1)
+    fx, fy = FRUIT_LEVELS[fruit_idx]
+    base_tile = get_tile_index(fx, fy)
+    tiles_per_row = sprite_sheet.width // 16
+    fruit_sprite[0, 0] = base_tile
+    fruit_sprite[0, 1] = base_tile + tiles_per_row
+
+update_fruit_sprite()
+main_group.append(fruit_sprite)
+
+# Bonus fruit that appears in the maze
+bonus_fruit = displayio.TileGrid(
+    sprite_sheet,
+    pixel_shader=sprite_palette,
+    width=1,
+    height=2,
+    tile_width=16,
+    tile_height=8
+)
+# Fruit appears below ghost house (tile 13-14, row 17 in arcade = pixel coords)
+bonus_fruit.x = OFFSET_X + 13 * 8  # Center of maze
+bonus_fruit.y = OFFSET_Y + 17 * 8 - 4  # Below ghost house, moved up 4 pixels
+bonus_fruit.hidden = True
+main_group.append(bonus_fruit)
+
+# Bonus fruit score display (reuse same sprite, show score temporarily)
+bonus_fruit_active = False
+bonus_fruit_timer = 0
+dots_eaten = 0
+# TOTAL_DOTS is computed at startup after populating items_grid
+
+def update_bonus_fruit():
+    """Update bonus fruit sprite based on current level."""
+    fruit_idx = min(level - 1, len(FRUIT_LEVELS) - 1)
+    fx, fy = FRUIT_LEVELS[fruit_idx]
+    base_tile = get_tile_index(fx, fy)
+    tiles_per_row = sprite_sheet.width // 16
+    bonus_fruit[0, 0] = base_tile
+    bonus_fruit[0, 1] = base_tile + tiles_per_row
+
+def update_life_display():
+    """Update life sprites visibility based on current lives."""
+    for i, sprite in enumerate(life_sprites):
+        # Show lives - 1 (don't show current life)
+        sprite.hidden = (i >= lives - 1)
+
+print(f"Lives: {lives}, Level: {level}")
+
+# =============================================================================
 # INPUT HANDLING
 # =============================================================================
 
@@ -1323,8 +1769,31 @@ game_state = STATE_PLAY
 death_timer = 0
 death_frame_idx = 0
 
+# Ghost Eating State
+eat_timer = 0
+ghosts_eaten_count = 0 # Reset when power pellet ends
+eaten_ghost_ref = None # Reference to the ghost being eaten
+
+# Level Complete State
+level_complete_timer = 0
+level_blink_count = 0
+
+# Play startup jingle before game begins
+print("GET READY!")
+play_startup_jingle()
+time.sleep(0.5)
+
 while True:
     start_time = time.monotonic()
+    
+    # Check sound toggle button (Button 1)
+    button_state = BUTTON_1.value
+    if not button_state and last_button_state:  # Button just pressed
+        sound_enabled = not sound_enabled
+        print(f"Sound: {'ON' if sound_enabled else 'OFF'}")
+        if not sound_enabled:
+            stop_sound()
+    last_button_state = button_state
     
     if game_state == STATE_PLAY:
         # Update Mode
@@ -1362,7 +1831,7 @@ while True:
             # Handle Frightened Timer
             if ghost.mode == MODE_FRIGHTENED:
                 ghost.frightened_timer += 1
-                if ghost.frightened_timer > 600: # 6 seconds (approx)
+                if ghost.frightened_timer > FRIGHTENED_DURATION:
                     ghost.mode = current_mode # Revert to global mode
             
             ghost.update()
@@ -1377,15 +1846,43 @@ while True:
                 if ghost.mode == MODE_FRIGHTENED:
                     # Eat Ghost
                     print(f"ATE GHOST {ghost.ghost_type}!")
-                    score += 200 # TODO: Multiplier (200, 400, 800, 1600)
+                    play_eat_ghost_sound()
+                    
+                    # Calculate Score (200, 400, 800, 1600)
+                    points = 200 * (2 ** ghosts_eaten_count)
+                    score += points
+                    ghosts_eaten_count += 1
+                    
+                    # Switch to Eating State
+                    game_state = STATE_EATING_GHOST
+                    eat_timer = 0
+                    eaten_ghost_ref = ghost
+                    
+                    # Hide Pac-Man and Ghost
+                    pacman.sprite.hidden = True
+                    ghost.sprite.hidden = True
+                    
+                    # Show Score Sprite at Ghost Position
+                    # We reuse the Pac-Man sprite for the score since it's already in main_group
+                    # Save Pac-Man's actual position to restore later
+                    pacman.saved_x = pacman.x
+                    pacman.saved_y = pacman.y
+                    
+                    pacman.x = ghost.x
+                    pacman.y = ghost.y
+                    pacman.update_sprite_pos()
+                    pacman.set_score_frame(ghosts_eaten_count - 1)
+                    pacman.sprite.hidden = False
+                    
+                    # Set Ghost to Eaten Mode (will be hidden during freeze)
                     ghost.mode = MODE_EATEN
-                    # Freeze briefly for effect? (Arcade does this)
-                    # For now, just continue
+                    
                 elif ghost.mode == MODE_EATEN:
                     pass # Ignore eyes
                 else:
                     # Killed by ghost
                     print("PAC-MAN DIED!")
+                    stop_sound()
                     game_state = STATE_DYING
                     death_timer = 0
                     death_frame_idx = 0
@@ -1394,9 +1891,48 @@ while True:
                     for g in ghosts:
                         g.sprite.hidden = True
                     
-                    # Pause briefly before animation
+                    # Pause briefly before animation (no sound yet)
                     time.sleep(1.0)
                     break # Stop checking other ghosts
+        
+        # Bonus Fruit Logic
+        if bonus_fruit_active:
+            bonus_fruit_timer += 1
+            # Fruit disappears after ~10 seconds (600 frames at 60fps, adjust for actual fps)
+            if bonus_fruit_timer > 500:
+                bonus_fruit_active = False
+                bonus_fruit.hidden = True
+                print("Bonus fruit expired")
+            else:
+                # Check collision with fruit
+                fruit_x = 13 * 8  # Center of maze
+                fruit_y = 17 * 8
+                dx = abs((pacman.x + 8) - (fruit_x + 8))
+                dy = abs((pacman.y + 8) - (fruit_y + 8))
+                if dx < 8 and dy < 8:
+                    # Eat fruit!
+                    fruit_idx = min(level - 1, len(FRUIT_POINTS) - 1)
+                    points = FRUIT_POINTS[fruit_idx]
+                    score += points
+                    print(f"ATE FRUIT! +{points} points!")
+                    play_eat_ghost_sound()  # Reuse eat sound
+                    
+                    # Show score at fruit position (use STATE_EATING_FRUIT)
+                    bonus_fruit_active = False
+                    game_state = STATE_EATING_FRUIT
+                    eat_timer = 0
+                    
+                    # Hide fruit and show score
+                    # We'll just hide fruit for now - showing score would need another sprite
+                    bonus_fruit.hidden = True
+        
+        # Check for Level Complete (all dots eaten)
+        if dots_eaten >= TOTAL_DOTS:
+            print(f"LEVEL {level} COMPLETE!")
+            stop_sound()
+            game_state = STATE_LEVEL_COMPLETE
+            level_complete_timer = 0
+            level_blink_count = 0
 
     elif game_state == STATE_DYING:
         death_timer += 1
@@ -1406,23 +1942,166 @@ while True:
             
             if death_frame_idx < len(PacMan.DEATH_FRAMES):
                 pacman.set_death_frame(death_frame_idx)
+                play_death_note(death_frame_idx)  # Play sound with each frame
             else:
                 # Death done
+                stop_sound()
                 time.sleep(1.0)
                 
-                # Reset Game
-                pacman.reset()
-                for g in ghosts:
-                    g.reset()
-                    g.sprite.hidden = False
+                # Lose a life
+                lives -= 1
+                update_life_display()
+                print(f"Lives remaining: {lives}")
                 
-                # Reset Mode
-                mode_index = 0
-                current_mode = MODE_SCATTER
-                last_mode_time = time.monotonic()
-                
-                game_state = STATE_PLAY
-    
+                if lives <= 0:
+                    print("GAME OVER!")
+                    
+                    # Update high score if needed
+                    if score > high_score:
+                        high_score = score
+                        if high_score_label:
+                            high_score_label.text = f"{high_score}"
+                        print(f"NEW HIGH SCORE: {high_score}")
+                    
+                    # Show GAME OVER
+                    if game_over_label:
+                        game_over_label.hidden = False
+                    
+                    # Hide Pac-Man
+                    pacman.sprite.hidden = True
+                    
+                    game_state = STATE_GAME_OVER
+                else:
+                    # Reset Game (still have lives)
+                    pacman.reset()
+                    for g in ghosts:
+                        g.reset()
+                        g.sprite.hidden = False
+                    
+                    # Reset Mode
+                    mode_index = 0
+                    current_mode = MODE_SCATTER
+                    last_mode_time = time.monotonic()
+                    
+                    game_state = STATE_PLAY
+
+    elif game_state == STATE_EATING_GHOST:
+        eat_timer += 1
+        if eat_timer >= 60: # Freeze for 1 second (approx)
+            game_state = STATE_PLAY
+            
+            # Restore Pac-Man
+            pacman.sprite.hidden = False
+            pacman.set_frame(pacman.direction, 0)
+            # Restore position (he shouldn't have moved, but we moved his sprite for score)
+            pacman.x = pacman.saved_x
+            pacman.y = pacman.saved_y
+            pacman.update_sprite_pos()
+            # But Pac-Man continues from where he was? No, the game freezes.
+            # So Pac-Man is AT the collision point.
+            
+            # Restore Ghost Visibility (now Eyes)
+            if eaten_ghost_ref:
+                eaten_ghost_ref.sprite.hidden = False
+                eaten_ghost_ref.set_frame(eaten_ghost_ref.direction, 0) # Update to eyes frame immediately
+            
+            # Reset Pac-Man sprite to normal (it was showing score)
+            pacman.set_frame(pacman.direction, 0)
+
+    elif game_state == STATE_EATING_FRUIT:
+        eat_timer += 1
+        if eat_timer >= 60:  # Brief pause
+            game_state = STATE_PLAY
+
+    elif game_state == STATE_LEVEL_COMPLETE:
+        level_complete_timer += 1
+        
+        # Blink the maze (toggle visibility every 15 frames)
+        if level_complete_timer % 15 == 0:
+            level_blink_count += 1
+            # Toggle maze palette between blue and white
+            if level_blink_count % 2 == 0:
+                maze_palette[1] = 0x2121DE  # Blue (original)
+            else:
+                maze_palette[1] = 0xFFFFFF  # White
+        
+        # After ~3 seconds (180 frames) of blinking, advance level
+        if level_complete_timer >= 180:
+            # Restore maze color
+            maze_palette[1] = 0x2121DE
+            
+            # Advance level
+            level += 1
+            dots_eaten = 0
+            print(f"Starting Level {level}")
+            
+            # Update fruit display
+            update_fruit_sprite()
+            
+            # Reset dots
+            reset_dots()
+            
+            # Reset positions
+            pacman.reset()
+            for g in ghosts:
+                g.reset()
+                g.sprite.hidden = False
+            
+            # Hide bonus fruit
+            bonus_fruit.hidden = True
+            bonus_fruit_active = False
+            
+            # Reset Mode
+            mode_index = 0
+            current_mode = MODE_SCATTER
+            last_mode_time = time.monotonic()
+            
+            game_state = STATE_PLAY
+            
+            # Play startup jingle for new level
+            play_startup_jingle()
+            time.sleep(0.5)
+
+    elif game_state == STATE_GAME_OVER:
+        # Wait for any button press to restart
+        if not PRESS.value or not UP.value or not DOWN.value or not LEFT.value or not RIGHT.value:
+            # Hide GAME OVER
+            if game_over_label:
+                game_over_label.hidden = True
+            
+            # Reset everything
+            lives = 3
+            score = 0
+            level = 1
+            dots_eaten = 0
+            update_life_display()
+            update_fruit_sprite()
+            
+            # Reset dots and power pellets
+            reset_dots()
+            
+            # Hide bonus fruit
+            bonus_fruit.hidden = True
+            bonus_fruit_active = False
+            
+            # Reset positions
+            pacman.reset()
+            pacman.sprite.hidden = False
+            for g in ghosts:
+                g.reset()
+                g.sprite.hidden = False
+            
+            # Reset Mode
+            mode_index = 0
+            current_mode = MODE_SCATTER
+            last_mode_time = time.monotonic()
+            
+            game_state = STATE_PLAY
+            
+            # Play startup jingle
+            play_startup_jingle()
+            time.sleep(0.3)
+
     # DEBUG: Heartbeat for ghost positions every 60 frames
     # if debug_timer == 0:
     #    for g in ghosts:
@@ -1438,6 +2117,10 @@ while True:
         # blink_state True = Pellet Visible = Cover Hidden
         for cover in pellet_covers:
             cover.hidden = blink_state
+            
+        # Blink 1UP Label
+        if one_up_label:
+            one_up_label.hidden = not blink_state
 
     # Debug output
     debug_timer += 1
@@ -1460,3 +2143,22 @@ while True:
         time.sleep(FRAME_DELAY - elapsed)
     
     # gc.collect() # Removed from main loop to fix stuttering
+    
+    # Update Scoreboard
+    if score != last_score:
+        if score_label:
+            score_label.text = f"{score:02d}" # Arcade style: just the number, often 00 or 0
+            # Right align logic if needed, but fixed width font helps
+            # If score is 0, arcade shows "00" usually
+            if score == 0:
+                score_label.text = "00"
+            else:
+                score_label.text = f"{score}"
+                
+        # Update High Score
+        if score > high_score:
+            high_score = score
+            if high_score_label:
+                high_score_label.text = f"{high_score}"
+                
+        last_score = score
