@@ -388,6 +388,7 @@ if DEVICE is FRUIT_JAM:
 else:
     # Set up display
     display = board.DISPLAY
+display.auto_refresh = False
 
 if DISPLAY_VERTICAL:
     # vertical orientation, flipped 180 from before
@@ -1857,6 +1858,7 @@ level_blink_count = 0
 
 # Play startup jingle before game begins
 print("GET READY!")
+display.refresh()
 play_startup_jingle()
 time.sleep(0.5)
 
@@ -2252,3 +2254,5 @@ while True:
                 high_score_label.text = f"{high_score}"
                 
         last_score = score
+        
+    display.refresh(target_frames_per_second=60)
