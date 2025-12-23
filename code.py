@@ -43,9 +43,18 @@ else:
 # CONSTANTS
 # =============================================================================
 
-# Screen dimensions (vertical orientation)
-SCREEN_WIDTH = 240
-SCREEN_HEIGHT = 320
+if DEVICE is DEVICE_FRUIT_JAM:
+    # get user display width
+    if (SCREEN_WIDTH := os.getenv("CIRCUITPY_DISPLAY_WIDTH")) is not None:
+        SCREEN_HEIGHT = next((h for w, h in adafruit_fruitjam.peripherals.VALID_DISPLAY_SIZES if SCREEN_WIDTH == w))
+    else:
+        SCREEN_WIDTH = 720
+        SCREEN_HEIGHT = 400
+    SCALE = 2 if SCREEN_WIDTH > 360 else 1
+else:
+    # Screen dimensions (vertical orientation)
+    SCREEN_WIDTH = 240
+    SCREEN_HEIGHT = 320
 
 # Game area dimensions (from sprite sheet)
 GAME_WIDTH = 224
@@ -333,9 +342,15 @@ def play_startup_jingle():
 # DISPLAY SETUP
 # =============================================================================
 
-# Set up display (vertical orientation, flipped 180 from before)
-display = board.DISPLAY
-display.rotation = 270
+if DEVICE is DEVICE_FRUIT_JAM:
+    # setup display
+    adafruit_fruitjam.peripherals.request_display_config(SCREEN_WIDTH, SCREEN_HEIGHT)
+    display = supervisor.runtime.display
+
+else:
+    # Set up display (vertical orientation, flipped 180 from before)
+    display = board.DISPLAY
+    display.rotation = 270
 
 # Main display group
 main_group = displayio.Group()
