@@ -2,9 +2,9 @@
 
 A pixel-perfect Pac-Man clone built for the **Seeed Wio Terminal** and **Adafruit Fruit Jam** using **CircuitPython 10**.
 
-![Pac-Man on Wio Terminal](images/pac-wio.jpg)
-
-![Pac-Man on Fruit Jam](images/pac-fruitjam.jpg)
+| Seeed Wio Terminal | Adafruit Fruit Jam |
+|--------------------|--------------------|
+| ![Pac-Man on Wio Terminal](images/pac-wio.jpg) | ![Pac-Man on Fruit Jam](images/pac-fruitjam.jpg) |
 
 ---
 
