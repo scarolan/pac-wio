@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2025 Sean Carolan (@scarolan)
+# SPDX-FileCopyrightText: 2025 Cooper Dalrymple (@relic-se)
+#
+# SPDX-License-Identifier: MIT
+
 """
 Pac-Man Clone for Seeed Wio Terminal
 CircuitPython 10.0.3
