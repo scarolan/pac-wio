@@ -142,6 +142,7 @@ def main(device:str = "fruitjam"):
                 standalone_mode=False,
             )
             os.remove(bundle_dir / "boot_out.txt")
+            os.remove(bundle_dir / "requirements.txt")
 
         # create the final zip file
         with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zf:
