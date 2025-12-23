@@ -64,20 +64,23 @@ if DEVICE is FRUIT_JAM:
     else:
         SCREEN_WIDTH = 720
         SCREEN_HEIGHT = 400
-    SCALE = 2 if SCREEN_WIDTH > 360 else 1
 else:
-    # Screen dimensions (vertical orientation)
-    SCREEN_WIDTH = 240
-    SCREEN_HEIGHT = 320
-    SCALE = 1
+    # Screen dimensions
+    SCREEN_WIDTH = 320
+    SCREEN_HEIGHT = 240
+
+# determine if we need to display in vertical orientation
+DISPLAY_VERTICAL = SCREEN_WIDTH <= 360
+DISPLAY_WIDTH = SCREEN_HEIGHT if DISPLAY_VERTICAL else SCREEN_WIDTH
+DISPLAY_HEIGHT = SCREEN_WIDTH if DISPLAY_VERTICAL else SCREEN_HEIGHT
 
 # Game area dimensions (from sprite sheet)
 GAME_WIDTH = 224
 GAME_HEIGHT = 248
 
 # Offset to center game area in screen
-OFFSET_X = (SCREEN_WIDTH - GAME_WIDTH) // 2   # 8 pixels
-OFFSET_Y = (SCREEN_HEIGHT - GAME_HEIGHT) // 2  # 36 pixels
+OFFSET_X = (DISPLAY_WIDTH - GAME_WIDTH) // 2   # 8 pixels
+OFFSET_Y = (DISPLAY_HEIGHT - GAME_HEIGHT) // 2  # 36 pixels
 
 # Tile dimensions
 TILE_SIZE = 8
@@ -382,14 +385,16 @@ if DEVICE is FRUIT_JAM:
     # setup display
     adafruit_fruitjam.peripherals.request_display_config(SCREEN_WIDTH, SCREEN_HEIGHT)
     display = supervisor.runtime.display
-
 else:
-    # Set up display (vertical orientation, flipped 180 from before)
+    # Set up display
     display = board.DISPLAY
+
+if DISPLAY_VERTICAL:
+    # vertical orientation, flipped 180 from before
     display.rotation = 270
 
 # Main display group
-main_group = displayio.Group(scale=SCALE)
+main_group = displayio.Group()
 display.root_group = main_group
 
 # =============================================================================
