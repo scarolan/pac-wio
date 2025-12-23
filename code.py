@@ -56,6 +56,7 @@ else:
     # Screen dimensions (vertical orientation)
     SCREEN_WIDTH = 240
     SCREEN_HEIGHT = 320
+    SCALE = 1
 
 # Game area dimensions (from sprite sheet)
 GAME_WIDTH = 224
@@ -375,7 +376,7 @@ else:
     display.rotation = 270
 
 # Main display group
-main_group = displayio.Group()
+main_group = displayio.Group(scale=SCALE)
 display.root_group = main_group
 
 # =============================================================================
