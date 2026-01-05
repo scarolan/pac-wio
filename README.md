@@ -1,8 +1,10 @@
-# 🕹️ Pac-Man Clone for Seeed Wio Terminal
+# 🕹️ Pac-Man Clone for Seeed Wio Terminal and Adafruit Fruit Jam
 
-A pixel-perfect Pac-Man clone built for the **Seeed Wio Terminal** using **CircuitPython 10**.
+A pixel-perfect Pac-Man clone built for the **Seeed Wio Terminal** and **Adafruit Fruit Jam** using **CircuitPython 10**.
 
-![Pac-Man on Wio Terminal](images/pac-wio.jpg)
+| Seeed Wio Terminal | Adafruit Fruit Jam |
+|--------------------|--------------------|
+| ![Pac-Man on Wio Terminal](images/pac-wio.jpg) | ![Pac-Man on Fruit Jam](images/pac-fruitjam.jpg) |
 
 ---
 
@@ -53,6 +55,12 @@ A pixel-perfect Pac-Man clone built for the **Seeed Wio Terminal** using **Circu
   - 2.4" LCD (320x240, used in portrait mode: 240x320)
   - Built-in 5-way joystick
   - Built-in buzzer
+- **[Adafruit Fruit Jam](https://www.adafruit.com/product/6200)**
+  - RP2350B dual 150MHz Cortex M33 microcontroller
+  - 8 MB PSRAM
+  - DVI video output on the HSTX port (landscape and portrait mode supported depending on display resolution)
+  - USB keyboard input
+  - I2S stereo headphone + mono speaker output
 
 ---
 
@@ -60,15 +68,17 @@ A pixel-perfect Pac-Man clone built for the **Seeed Wio Terminal** using **Circu
 
 ### 1. Install CircuitPython 10
 
-Download and install [CircuitPython 10.x for Wio Terminal](https://circuitpython.org/board/seeeduino_wio_terminal/).
+Download and install CircuitPython 10.x for [Wio Terminal](https://circuitpython.org/board/seeeduino_wio_terminal/) or [Fruit Jam](https://circuitpython.org/board/adafruit_fruit_jam/).
 
 ### 2. Install Required Libraries
 
 Copy these libraries from the [Adafruit CircuitPython Bundle](https://circuitpython.org/libraries) to your `CIRCUITPY/lib/` folder:
 
-- `adafruit_imageload/` (folder)
 - `adafruit_bitmap_font/` (folder)
 - `adafruit_display_text/` (folder)
+- For **Adafruit Fruit Jam**:
+  - `adafruit_imageload/` (folder)
+  - `adafruit_fruitjam/` (folder)
 
 ### 3. Copy Game Files
 
@@ -83,10 +93,22 @@ CIRCUITPY/
 │   ├── maze_empty.bmp
 │   └── sprites.bmp
 └── lib/
-    ├── adafruit_imageload/
     ├── adafruit_bitmap_font/
     └── adafruit_display_text/
 ```
+
+Additional file structure for **Adafruit Fruit Jam**
+
+```
+CIRCUITPY/
+└── lib/
+    ├── adafruit_imageload/
+    └── adafruit_fruitjam/
+```
+
+#### Fruit Jam OS (**Adafruit Fruit Jam** only)
+
+This application also supports installation within [Fruit Jam OS](https://learn.adafruit.com/fruit-jam-os). Install it using the same principles above but instead of using `CIRCUITPY/` as the root directly, it can be installed into `CIRCUITPY/apps/` and then opened from the launcher application.
 
 ### 4. Play!
 

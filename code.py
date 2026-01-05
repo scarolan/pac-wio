@@ -1,38 +1,97 @@
+# SPDX-FileCopyrightText: 2025 Sean Carolan (@scarolan)
+# SPDX-FileCopyrightText: 2025 Cooper Dalrymple (@relic-se)
+#
+# SPDX-License-Identifier: MIT
+
 """
 Pac-Man Clone for Seeed Wio Terminal
 CircuitPython 10.0.3
 """
 
+# load included modules if we aren't installed on the root path
+if len(__file__.split("/")[:-1]) > 1:
+    lib_path = "/".join(__file__.split("/")[:-1]) + "/lib"
+    try:
+        import os
+        os.stat(lib_path)
+    except:
+        pass
+    else:
+        import sys
+        sys.path.append(lib_path)
+
 import board
 import displayio
-# import adafruit_imageload
 import gc
 import time
 import random
 from digitalio import DigitalInOut, Pull
 import terminalio
 import pwmio
+import os
+from micropython import const
 try:
     from adafruit_bitmap_font import bitmap_font
     from adafruit_display_text import label
 except ImportError:
     pass
 
+WIO = const(0)
+FRUIT_JAM = const(1)
+
+DEVICE = WIO
+if os.uname().machine.startswith("Adafruit Fruit Jam"):
+    try:
+        import adafruit_fruitjam
+    except ImportError:
+        pass
+    else:
+        DEVICE = FRUIT_JAM
+
+        import supervisor
+        import synthio
+        import sys
+
+        # using imageload for better performance with more RAM consumption
+        try:
+            import adafruit_imageload
+        except ImportError:
+            pass
+
+        try:
+            import launcher_config
+            config = launcher_config.LauncherConfig()
+        except ImportError:
+            config = None
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
 
-# Screen dimensions (vertical orientation)
-SCREEN_WIDTH = 240
-SCREEN_HEIGHT = 320
+if DEVICE is FRUIT_JAM:
+    # get user display width
+    if (SCREEN_WIDTH := os.getenv("CIRCUITPY_DISPLAY_WIDTH")) is not None:
+        SCREEN_HEIGHT = next((h for w, h in adafruit_fruitjam.peripherals.VALID_DISPLAY_SIZES if SCREEN_WIDTH == w))
+    else:
+        SCREEN_WIDTH = 720
+        SCREEN_HEIGHT = 400
+else:
+    # Screen dimensions
+    SCREEN_WIDTH = 320
+    SCREEN_HEIGHT = 240
+
+# determine if we need to display in vertical orientation
+DISPLAY_VERTICAL = SCREEN_WIDTH <= 360
+DISPLAY_WIDTH = SCREEN_HEIGHT if DISPLAY_VERTICAL else SCREEN_WIDTH
+DISPLAY_HEIGHT = SCREEN_WIDTH if DISPLAY_VERTICAL else SCREEN_HEIGHT
 
 # Game area dimensions (from sprite sheet)
 GAME_WIDTH = 224
 GAME_HEIGHT = 248
 
 # Offset to center game area in screen
-OFFSET_X = (SCREEN_WIDTH - GAME_WIDTH) // 2   # 8 pixels
-OFFSET_Y = (SCREEN_HEIGHT - GAME_HEIGHT) // 2  # 36 pixels
+OFFSET_X = (DISPLAY_WIDTH - GAME_WIDTH) // 2   # 8 pixels
+OFFSET_Y = (DISPLAY_HEIGHT - GAME_HEIGHT) // 2  # 36 pixels
 
 # Tile dimensions
 TILE_SIZE = 8
@@ -156,97 +215,113 @@ MAZE_DATA = [
 # INPUT SETUP
 # =============================================================================
 
-UP = DigitalInOut(board.SWITCH_UP)
-UP.switch_to_input(pull=Pull.UP)
-DOWN = DigitalInOut(board.SWITCH_DOWN)
-DOWN.switch_to_input(pull=Pull.UP)
-LEFT = DigitalInOut(board.SWITCH_LEFT)
-LEFT.switch_to_input(pull=Pull.UP)
-RIGHT = DigitalInOut(board.SWITCH_RIGHT)
-RIGHT.switch_to_input(pull=Pull.UP)
-PRESS = DigitalInOut(board.SWITCH_PRESS)
-PRESS.switch_to_input(pull=Pull.UP)
+if DEVICE is WIO:
+    UP = DigitalInOut(board.SWITCH_UP)
+    UP.switch_to_input(pull=Pull.UP)
+    DOWN = DigitalInOut(board.SWITCH_DOWN)
+    DOWN.switch_to_input(pull=Pull.UP)
+    LEFT = DigitalInOut(board.SWITCH_LEFT)
+    LEFT.switch_to_input(pull=Pull.UP)
+    RIGHT = DigitalInOut(board.SWITCH_RIGHT)
+    RIGHT.switch_to_input(pull=Pull.UP)
+    PRESS = DigitalInOut(board.SWITCH_PRESS)
+    PRESS.switch_to_input(pull=Pull.UP)
 
-# Sound toggle button (Button 1 on top of device)
-BUTTON_1 = DigitalInOut(board.BUTTON_1)
-BUTTON_1.switch_to_input(pull=Pull.UP)
+    # Sound toggle button (Button 1 on top of device)
+    BUTTON_1 = DigitalInOut(board.BUTTON_1)
+    BUTTON_1.switch_to_input(pull=Pull.UP)
+    last_button_state = True  # True = not pressed
 
 # =============================================================================
 # SOUND SETUP
 # =============================================================================
 
-# Wio Terminal buzzer is on pin BUZZER (or D0 on some builds)
-try:
-    buzzer = pwmio.PWMOut(board.BUZZER, variable_frequency=True)
-except AttributeError:
-    # Fallback if BUZZER pin not defined
+if DEVICE is FRUIT_JAM:
+    peripherals = adafruit_fruitjam.peripherals.Peripherals(
+        safe_volume_limit=(config.audio_volume_override_danger if config is not None else 0.75),
+    )
+    synth = synthio.Synthesizer(
+        sample_rate=peripherals.dac.sample_rate,
+        channel_count=1,
+    )
+    peripherals.audio.play(synth)
+else:
+    # Wio Terminal buzzer is on pin BUZZER (or D0 on some builds)
     try:
-        buzzer = pwmio.PWMOut(board.D0, variable_frequency=True)
-    except:
-        buzzer = None
-        print("No buzzer available")
+        buzzer = pwmio.PWMOut(board.BUZZER, variable_frequency=True)
+    except AttributeError:
+        # Fallback if BUZZER pin not defined
+        try:
+            buzzer = pwmio.PWMOut(board.D0, variable_frequency=True)
+        except:
+            buzzer = None
+            print("No buzzer available")
 
 sound_enabled = True
-last_button_state = True  # True = not pressed
 
 # Pac-Man waka frequencies (alternating)
 WAKA_FREQ_1 = 261  # C4
 WAKA_FREQ_2 = 392  # G4
 waka_toggle = False
 
+def play_sound(freq:int):
+    if DEVICE is FRUIT_JAM:
+        synth.release_all_then_press(synthio.Note(frequency=freq))
+    elif buzzer is not None:
+        buzzer.frequency = freq
+        buzzer.duty_cycle = 32768  # 50% duty cycle
+
+def stop_sound():
+    """Stop any sound."""
+    if DEVICE is FRUIT_JAM:
+        synth.release_all()
+    elif buzzer is not None:
+        buzzer.duty_cycle = 0
+
 def play_waka():
     """Play the waka sound effect."""
     global waka_toggle
-    if not sound_enabled or buzzer is None:
+    if not sound_enabled:
         return
     
     freq = WAKA_FREQ_2 if waka_toggle else WAKA_FREQ_1
     waka_toggle = not waka_toggle
     
-    buzzer.frequency = freq
-    buzzer.duty_cycle = 32768  # 50% duty cycle
-
-def stop_sound():
-    """Stop any sound."""
-    if buzzer is not None:
-        buzzer.duty_cycle = 0
+    play_sound(freq)
 
 def play_death_sound():
     """Play death sound effect (blocking version - not used during animation)."""
-    if not sound_enabled or buzzer is None:
+    if not sound_enabled:
         return
     # Descending tone
     for freq in range(400, 100, -30):
-        buzzer.frequency = freq
-        buzzer.duty_cycle = 32768
+        play_sound(freq)
         time.sleep(0.05)
-    buzzer.duty_cycle = 0
+    stop_sound()
 
 def play_death_note(frame_idx):
     """Play a single death note based on animation frame."""
-    if not sound_enabled or buzzer is None:
+    if not sound_enabled:
         return
     # 11 death frames, descend from 500Hz to 100Hz
     freq = 500 - (frame_idx * 35)
     if freq < 100:
         freq = 100
-    buzzer.frequency = freq
-    buzzer.duty_cycle = 32768
+    play_sound(freq)
 
 def play_eat_ghost_sound():
     """Play ghost eating sound."""
-    if not sound_enabled or buzzer is None:
+    if not sound_enabled:
         return
     # Quick ascending tone
     for freq in range(200, 800, 100):
-        buzzer.frequency = freq
-        buzzer.duty_cycle = 32768
+        play_sound(freq)
         time.sleep(0.02)
-    buzzer.duty_cycle = 0
+    stop_sound()
 
 def play_startup_jingle():
     """Play the Pac-Man startup jingle."""
-    if not sound_enabled or buzzer is None:
+    if not sound_enabled:
         return
     
     # Pac-Man Intro Theme
@@ -300,21 +375,35 @@ def play_startup_jingle():
     ]
 
     for freq, duration in melody:
-        buzzer.frequency = freq
-        buzzer.duty_cycle = 32768
+        play_sound(freq)
         time.sleep(duration)
-        buzzer.duty_cycle = 0
+        stop_sound()
         time.sleep(0.02)  # Brief gap between notes
     
-    buzzer.duty_cycle = 0
+    stop_sound()
+
+def toggle_sound():
+    sound_enabled = not sound_enabled
+    print(f"Sound: {'ON' if sound_enabled else 'OFF'}")
+    if not sound_enabled:
+        stop_sound()
 
 # =============================================================================
 # DISPLAY SETUP
 # =============================================================================
 
-# Set up display (vertical orientation, flipped 180 from before)
-display = board.DISPLAY
-display.rotation = 270
+if DEVICE is FRUIT_JAM:
+    # setup display
+    adafruit_fruitjam.peripherals.request_display_config(SCREEN_WIDTH, SCREEN_HEIGHT)
+    display = supervisor.runtime.display
+else:
+    # Set up display
+    display = board.DISPLAY
+display.auto_refresh = False
+
+if DISPLAY_VERTICAL:
+    # vertical orientation, flipped 180 from before
+    display.rotation = 270
 
 # Main display group
 main_group = displayio.Group()
@@ -324,11 +413,15 @@ display.root_group = main_group
 # LOAD MAZE BACKGROUND
 # =============================================================================
 
-# Load the empty maze (no dots) using OnDiskBitmap to save RAM
-# We keep the file open for the duration of the program
-maze_file = open("/images/maze_empty.bmp", "rb")
-maze_bmp = displayio.OnDiskBitmap(maze_file)
-maze_palette = maze_bmp.pixel_shader
+# Load the empty maze (no dots)
+if "adafruit_imageload" in globals():
+    maze_bmp, maze_palette = adafruit_imageload.load("images/maze_empty.bmp")
+else:
+    # using OnDiskBitmap to save RAM
+    # We keep the file open for the duration of the program
+    maze_file = open("images/maze_empty.bmp", "rb")
+    maze_bmp = displayio.OnDiskBitmap(maze_file)
+    maze_palette = maze_bmp.pixel_shader
 
 # Create maze background as TileGrid
 maze_bg = displayio.TileGrid(
@@ -484,9 +577,12 @@ gc.collect()
 # LOAD SPRITE SHEET
 # =============================================================================
 
-# Use OnDiskBitmap to save RAM and avoid allocation issues
-sprite_sheet = displayio.OnDiskBitmap("/images/sprites.bmp")
-sprite_palette = sprite_sheet.pixel_shader
+if "adafruit_imageload" in globals():
+    sprite_sheet, sprite_palette = adafruit_imageload.load("images/sprites.bmp")
+else:
+    # Use OnDiskBitmap to save RAM and avoid allocation issues
+    sprite_sheet = displayio.OnDiskBitmap("images/sprites.bmp")
+    sprite_palette = sprite_sheet.pixel_shader
 
 print(f"Sprite Sheet Dimensions: {sprite_sheet.width}x{sprite_sheet.height}")
 
@@ -1557,70 +1653,43 @@ last_score = -1
 high_score = 10000
 last_high_score = -1
 
-try:
-    # Check if libraries were imported successfully
-    if 'bitmap_font' in globals() and 'label' in globals():
-        font = bitmap_font.load_font("/fonts/press_start_2p.bdf")
-        
+if "label" in globals():
+    try:
+        FONT = bitmap_font.load_font("fonts/press_start_2p.bdf") if "bitmap_font" in globals() else terminalio.FONT
+
         # 1UP Label (Top Left)
-        one_up_label = label.Label(font, text="1UP", color=0xFFFFFF)
+        one_up_label = label.Label(FONT, text="1UP", color=0xFFFFFF)
         one_up_label.x = 8
         one_up_label.y = 8
+        main_group.append(one_up_label)
         
         # Score Label (Below 1UP)
-        score_label = label.Label(font, text="00", color=0xFFFFFF)
+        score_label = label.Label(FONT, text="0" * (2 if "bitmap_font" in globals() else 1), color=0xFFFFFF)
         score_label.x = 8
         score_label.y = 24
+        main_group.append(score_label)
         
         # High Score Title (Top Center)
-        high_score_title_label = label.Label(font, text="HIGH SCORE", color=0xFFFFFF)
-        high_score_title_label.x = 72  # Center: (240 - 80) / 2 = 80, adjust for text width
-        high_score_title_label.y = 8
+        high_score_title_label = label.Label(FONT, text="HIGH SCORE", color=0xFFFFFF)
+        high_score_title_label.anchor_point = (0.5, 0.0)
+        high_score_title_label.anchored_position = (DISPLAY_WIDTH // 2, 8)
+        main_group.append(high_score_title_label)
         
         # High Score Value (Below Title)
-        high_score_label = label.Label(font, text=f"{high_score}", color=0xFFFFFF)
-        high_score_label.x = 96  # Centered under HIGH SCORE
-        high_score_label.y = 24
+        high_score_label = label.Label(FONT, text=str(high_score), color=0xFFFFFF)
+        high_score_label.anchor_point = (0.5, 0.0)
+        high_score_label.anchored_position = (DISPLAY_WIDTH // 2, 24)
+        main_group.append(high_score_label)
         
         # GAME OVER Label (centered, hidden initially)
-        game_over_label = label.Label(font, text="GAME  OVER", color=0xFF0000)
-        game_over_label.x = 64  # Centered on 240px screen
-        game_over_label.y = 160  # Middle of screen
+        game_over_label = label.Label(FONT, text="GAME  OVER", color=0xFF0000)
+        game_over_label.anchor_point = (0.5, 0.5)
+        game_over_label.anchored_position = (DISPLAY_WIDTH // 2, DISPLAY_HEIGHT // 2)
         game_over_label.hidden = True
-        
-    elif 'terminalio' in globals() and 'label' in globals():
-        print("Using terminalio font")
-        font = terminalio.FONT
-        
-        one_up_label = label.Label(font, text="1UP", color=0xFFFFFF)
-        one_up_label.x = 8
-        one_up_label.y = 8
-        
-        score_label = label.Label(font, text="0", color=0xFFFFFF)
-        score_label.x = 8
-        score_label.y = 24
-        
-        high_score_title_label = label.Label(font, text="HIGH SCORE", color=0xFFFFFF)
-        high_score_title_label.x = 72
-        high_score_title_label.y = 8
-        
-        high_score_label = label.Label(font, text=f"{high_score}", color=0xFFFFFF)
-        high_score_label.x = 96
-        high_score_label.y = 24
+        main_group.append(game_over_label)
 
-except Exception as e:
-    print(f"Scoreboard error: {e}")
-
-if one_up_label:
-    main_group.append(one_up_label)
-if score_label:
-    main_group.append(score_label)
-if high_score_title_label:
-    main_group.append(high_score_title_label)
-if high_score_label:
-    main_group.append(high_score_label)
-if game_over_label:
-    main_group.append(game_over_label)
+    except Exception as e:
+        print(f"Scoreboard error: {e}")
 
 # =============================================================================
 # LIVES AND FRUIT DISPLAY
@@ -1727,7 +1796,7 @@ print(f"Lives: {lives}, Level: {level}")
 # INPUT HANDLING
 # =============================================================================
 
-def read_input():
+def read_input(keys=None):
     """Read joystick and queue direction.
     
     Remapped for 270° screen rotation (USB port on left):
@@ -1736,16 +1805,16 @@ def read_input():
     Physical LEFT -> Game UP
     Physical RIGHT -> Game DOWN
     """
-    if not UP.value:
+    if (DEVICE is WIO and not UP.value) or (DEVICE is FRUIT_JAM and ("d" in keys or "\x1b[C" in keys)):
         pacman.next_direction = DIR_RIGHT
         # print("UP pressed -> RIGHT")
-    elif not DOWN.value:
+    elif (DEVICE is WIO and not DOWN.value) or (DEVICE is FRUIT_JAM and ("a" in keys or "\x1b[D" in keys)):
         pacman.next_direction = DIR_LEFT
         # print("DOWN pressed -> LEFT")
-    elif not LEFT.value:
+    elif (DEVICE is WIO and not LEFT.value) or (DEVICE is FRUIT_JAM and ("w" in keys or "\x1b[A" in keys)):
         pacman.next_direction = DIR_UP
         # print("LEFT pressed -> UP")
-    elif not RIGHT.value:
+    elif (DEVICE is WIO and not RIGHT.value) or (DEVICE is FRUIT_JAM and ("s" in keys or "\x1b[B" in keys)):
         pacman.next_direction = DIR_DOWN
         # print("RIGHT pressed -> DOWN")
 
@@ -1780,20 +1849,34 @@ level_blink_count = 0
 
 # Play startup jingle before game begins
 print("GET READY!")
+display.refresh()
 play_startup_jingle()
 time.sleep(0.5)
 
 while True:
     start_time = time.monotonic()
-    
-    # Check sound toggle button (Button 1)
-    button_state = BUTTON_1.value
-    if not button_state and last_button_state:  # Button just pressed
-        sound_enabled = not sound_enabled
-        print(f"Sound: {'ON' if sound_enabled else 'OFF'}")
-        if not sound_enabled:
-            stop_sound()
-    last_button_state = button_state
+
+    if DEVICE is FRUIT_JAM:
+        # extract keys from input buffer
+        keys = []
+        if (available := supervisor.runtime.serial_bytes_available) > 0:
+            buffer = sys.stdin.read(available)
+            while buffer:
+                key = buffer[0]
+                buffer = buffer[1:]
+                if key == "\x1b" and buffer and buffer[0] == "[" and len(buffer) >= 2:
+                    key += buffer[:2]
+                    buffer = buffer[2:]
+                keys.append(key)
+
+    if DEVICE is WIO:
+        # Check sound toggle button (Button 1)
+        button_state = BUTTON_1.value
+        if not button_state and last_button_state:  # Button just pressed
+            toggle_sound()
+        last_button_state = button_state
+    elif DEVICE is FRUIT_JAM and "z" in keys:
+        toggle_sound()
     
     if game_state == STATE_PLAY:
         # Update Mode
@@ -1823,7 +1906,7 @@ while True:
                         if not g.in_house:
                             g.reverse_pending = True
 
-        read_input()
+        read_input(keys)
         pacman.update()
         
         # Update ghosts
@@ -2064,7 +2147,7 @@ while True:
 
     elif game_state == STATE_GAME_OVER:
         # Wait for any button press to restart
-        if not PRESS.value or not UP.value or not DOWN.value or not LEFT.value or not RIGHT.value:
+        if (DEVICE is WIO and (not PRESS.value or not UP.value or not DOWN.value or not LEFT.value or not RIGHT.value)) or (DEVICE is FRUIT_JAM and len(keys) > 0):
             # Hide GAME OVER
             if game_over_label:
                 game_over_label.hidden = True
@@ -2162,3 +2245,5 @@ while True:
                 high_score_label.text = f"{high_score}"
                 
         last_score = score
+        
+    display.refresh(target_frames_per_second=60)

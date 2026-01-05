@@ -1,4 +1,0 @@
-Adafruit CircuitPython 10.0.3 on 2025-10-17; Seeeduino Wio Terminal with samd51p19
-Board ID:seeeduino_wio_terminal
-UID:25527A2934533753202020382B290DFF
-boot.txt output:

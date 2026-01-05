@@ -1,0 +1,3 @@
+Adafruit CircuitPython {version} on {date}; Adafruit Fruit Jam with rp2350b
+Board ID:adafruit_fruit_jam
+UID:

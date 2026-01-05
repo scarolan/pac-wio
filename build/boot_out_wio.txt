@@ -1,0 +1,3 @@
+Adafruit CircuitPython {version} on {date}; Seeeduino Wio Terminal with samd51p19
+Board ID:seeeduino_wio_terminal
+UID:
