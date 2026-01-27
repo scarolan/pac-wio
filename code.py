@@ -383,6 +383,7 @@ def play_startup_jingle():
     stop_sound()
 
 def toggle_sound():
+    global sound_enabled
     sound_enabled = not sound_enabled
     print(f"Sound: {'ON' if sound_enabled else 'OFF'}")
     if not sound_enabled:
