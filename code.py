@@ -1906,7 +1906,7 @@ while True:
                         if not g.in_house:
                             g.reverse_pending = True
 
-        read_input(keys)
+        read_input()
         pacman.update()
         
         # Update ghosts
